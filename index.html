@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Study & Work Plans</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background:#f7f8fa; }
+    .pill { text-transform: capitalize; }
+    .timer-display { font-variant-numeric: tabular-nums; letter-spacing: 1px; }
+    .sticky-footer { position: sticky; bottom: 0; background: #fff; padding: .75rem 1rem; border-top: 1px solid #eee; }
+  </style>
+</head>
+<body class="p-3">
+<div class="container">
+  <h1 class="mb-3">Study & Work Plans</h1>
+  <p class="text-muted">Use a URL hash (e.g. <code>#lab2_exam_revision_theory_heavy</code>) to open a specific plan.</p>
+
+  <div id="content"></div>
+
+  <div id="footer" class="sticky-footer d-none">
+    <div class="d-flex align-items-center justify-content-between">
+      <div>
+        <span class="badge text-bg-secondary me-2" id="current-block"></span>
+        <strong id="current-desc"></strong>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <div class="fs-4 timer-display" id="time-left">00:00</div>
+        <button id="btn-skip" class="btn btn-outline-secondary btn-sm">Skip</button>
+        <button id="btn-pause" class="btn btn-outline-primary btn-sm">Pause</button>
+      </div>
+    </div>
+    <div class="progress mt-2">
+      <div id="overall-progress" class="progress-bar" role="progressbar" style="width:0%"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/** ---- Data (your JSON) ---- **/
+const DATA = {
+  "block_definitions": {
+    "sprint": {
+      "rules": "Highly focused, summarize, take notes, and close; must finish.",
+      "focus_level_percentage": 90
+    },
+    "lab_marathon": {
+      "rules": "Allow supplements and music only; low energy focus; no/minimal multitasking for non-important tasks.",
+      "focus_level_percentage": "50-70"
+    },
+    "focus": {
+      "rules": "Prohibited music, multitasking, talking, etc.",
+      "focus_level_percentage": 70
+    },
+    "marathon": {
+      "rules": "No coffee, no sugar, no supplements.",
+      "focus_level_percentage": "50-70"
+    }
+  },
+  "study_and_work_plans": {
+    "lab1_creative_lab_heavy": {
+      "duration_hours": 3,
+      "tasks": [
+        {"duration_minutes": 10, "block_type": "marathon", "description": "warm up"},
+        {"duration_minutes": 60, "block_type": "lab_marathon", "description": "reading & review and planning"},
+        {"duration_minutes": 10, "block_type": "rest", "description": "break"},
+        {"duration_minutes": 80, "block_type": "focus", "description": "execution & experiment"},
+        {"duration_minutes": 20, "block_type": "sprint", "description": "finish closing"}
+      ]
+    },
+    "lab2_exam_revision_theory_heavy": {
+      "duration_hours": 3,
+      "tasks": [
+        {"duration_minutes": 90, "block_type": "marathon", "description": ""},
+        {"duration_minutes": 10, "block_type": "rest", "description": ""},
+        {"duration_minutes": 30, "block_type": "focus", "description": ""},
+        {"duration_minutes": 10, "block_type": "rest", "description": ""},
+        {"duration_minutes": 30, "block_type": "focus", "description": ""},
+        {"duration_minutes": 10, "block_type": "rest", "description": ""},
+        {"duration_minutes": 10, "block_type": "sprint", "description": ""}
+      ]
+    },
+    "theory1_exam_heavy": {
+      "duration_hours": 2,
+      "tasks": [
+        {"duration_minutes": 90, "block_type": "marathon", "description": ""},
+        {"duration_minutes": 30, "block_type": "focus_or_sprint", "description": ""}
+      ]
+    },
+    "work1_from_scratch": {
+      "duration_hours": 3,
+      "tasks": [
+        {"duration_minutes": 10, "block_type": "marathon", "description": "warm up"},
+        {"duration_minutes": 60, "block_type": "lab_marathon", "description": "reading & review and planning"},
+        {"duration_minutes": 10, "block_type": "rest", "description": "break"},
+        {"duration_minutes": 80, "block_type": "focus", "description": "execution & debug"},
+        {"duration_minutes": 20, "block_type": "sprint", "description": "finish job (not request bug free, just take note next task)"}
+      ]
+    },
+    "work2_debug_testing": {
+      "duration_hours": 2,
+      "tasks": [
+        {"duration_minutes": 20, "block_type": "marathon", "description": "warm up, reading & review"},
+        {"duration_minutes": 80, "block_type": "lab_marathon", "description": "execution & debug (last 20 min final testing round)"},
+        {"duration_minutes": 20, "block_type": "sprint", "description": "finish job (cannot done just note down)"}
+      ]
+    }
+  }
+};
+
+/** ---- Helpers ---- **/
+const el = sel => document.querySelector(sel);
+const cap = s => s.replace(/_/g, " ");
+const fmt = secs => {
+  const m = Math.floor(secs/60), s = secs % 60;
+  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+};
+const sumMinutes = tasks => tasks.reduce((a,t)=>a + (t.duration_minutes||0),0);
+
+/** ---- Simple sound cues with Web Audio API (no external files) ---- **/
+const Sound = (() => {
+  let ctx;
+  function ensure() { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); }
+  function beep(freq=880, duration=0.15, type='sine', gain=0.03) {
+    ensure();
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    g.gain.value = gain;
+    osc.connect(g).connect(ctx.destination);
+    osc.start();
+    setTimeout(()=>osc.stop(), duration*1000);
+  }
+  function chimeFocus() { // three beeps
+    beep(880, .12); setTimeout(()=>beep(660, .12), 160); setTimeout(()=>beep(990, .16), 320);
+  }
+  function chimeRest() { beep(440, .12); }
+  function chimeSprint() { beep(1200, .15); }
+  return { chimeFocus, chimeRest, chimeSprint };
+})();
+
+/** ---- Rendering ---- **/
+function renderIndex() {
+  const c = el('#content');
+  c.innerHTML = '';
+  // Block definitions
+  const bd = document.createElement('div');
+  bd.className = 'mb-4';
+  bd.innerHTML = `<h2 class="h4 mb-3">Block Definitions</h2>`;
+  Object.entries(DATA.block_definitions).forEach(([k, v]) => {
+    const pct = String(v.focus_level_percentage).includes('%') ? v.focus_level_percentage : `${v.focus_level_percentage}%`;
+    bd.innerHTML += `
+      <div class="card mb-2">
+        <div class="card-body">
+          <span class="badge text-bg-dark pill me-2">${k}</span>
+          <span class="text-muted">${v.rules}</span>
+          <div class="small mt-1"><strong>Focus level:</strong> ${pct}</div>
+        </div>
+      </div>`;
+  });
+  c.appendChild(bd);
+
+  // Plans list
+  const plans = document.createElement('div');
+  plans.innerHTML = `<h2 class="h4 mb-3">Plans</h2>`;
+  Object.entries(DATA.study_and_work_plans).forEach(([key, plan]) => {
+    const total = sumMinutes(plan.tasks);
+    const card = document.createElement('div');
+    card.className = 'card mb-3';
+    card.innerHTML = `
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <div><strong>${cap(key)}</strong></div>
+        <a class="btn btn-sm btn-outline-primary" href="#${key}">Open</a>
+      </div>
+      <ul class="list-group list-group-flush">
+        ${plan.tasks.map(t=>`
+          <li class="list-group-item d-flex justify-content-between">
+            <span><span class="badge text-bg-secondary pill me-2">${t.block_type}</span>${t.description || '<em>No description</em>'}</span>
+            <span class="text-muted">${t.duration_minutes} min</span>
+          </li>`).join('')}
+      </ul>
+      <div class="card-footer text-muted">Total: ${total} minutes (~${Math.round(total/60*10)/10} h) — Direct link: <code>#${key}</code></div>
+    `;
+    plans.appendChild(card);
+  });
+  c.appendChild(plans);
+  el('#footer').classList.add('d-none');
+}
+
+function renderPlan(key) {
+  const plan = DATA.study_and_work_plans[key];
+  const c = el('#content');
+  if (!plan) { c.innerHTML = `<div class="alert alert-warning">Plan <code>${key}</code> not found. <a href="#">Back to all</a></div>`; return; }
+
+  const total = sumMinutes(plan.tasks);
+  c.innerHTML = `
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <h2 class="h4 mb-0">${cap(key)}</h2>
+      <a class="btn btn-sm btn-outline-secondary" href="#">All Plans</a>
+    </div>
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="mb-3"><strong>Total:</strong> ${total} minutes (~${Math.round(total/60*10)/10} h)</div>
+        <div class="progress mb-3">
+          <div id="plan-progress" class="progress-bar" style="width:0%"></div>
+        </div>
+        <div class="d-flex gap-2">
+          <button id="btn-start" class="btn btn-primary">Start</button>
+          <button id="btn-reset" class="btn btn-outline-danger" disabled>Reset</button>
+        </div>
+      </div>
+      <ul class="list-group list-group-flush">
+        ${plan.tasks.map((t, i)=>`
+          <li class="list-group-item d-flex justify-content-between align-items-center" id="task-${i}">
+            <div>
+              <span class="badge text-bg-secondary pill me-2">${t.block_type}</span>
+              ${t.description || '<em>No description</em>'}
+            </div>
+            <span class="text-muted">${t.duration_minutes} min</span>
+          </li>`).join('')}
+      </ul>
+    </div>
+  `;
+
+  // Timer wiring
+  Timer.bind(plan, key);
+}
+
+/** ---- Timer Engine ---- **/
+const Timer = (() => {
+  let plan = null, key = '', idx = 0, secs = 0, running = false, handle = null;
+  let totalSecs = 0, elapsedSecs = 0;
+
+  function bind(_plan, _key) {
+    plan = _plan; key = _key;
+    totalSecs = sumMinutes(plan.tasks)*60; elapsedSecs = 0;
+    idx = 0; secs = 0; running = false; clearInterval(handle);
+    updateOverallProgress(0);
+    el('#footer').classList.add('d-none');
+
+    el('#btn-start').onclick = start;
+    el('#btn-reset').onclick = reset;
+
+    // Buttons in footer (appear once started)
+    el('#btn-skip').onclick = nextTask;
+    el('#btn-pause').onclick = togglePause;
+  }
+
+  function start() {
+    if (!plan || running) return;
+    el('#btn-start').disabled = true;
+    el('#btn-reset').disabled = false;
+    el('#footer').classList.remove('d-none');
+    idx = 0;
+    beginTask();
+    running = true;
+    tick();
+    handle = setInterval(tick, 1000);
+  }
+
+  function reset() {
+    clearInterval(handle);
+    running = false;
+    idx = 0; secs = 0; elapsedSecs = 0;
+    Array.from(document.querySelectorAll('[id^="task-"]')).forEach(li => li.classList.remove('list-group-item-success','opacity-50'));
+    updateFooter('', '', 0, true);
+    updateOverallProgress(0);
+    el('#btn-start').disabled = false;
+    el('#btn-reset').disabled = true;
+    el('#footer').classList.add('d-none');
+  }
+
+  function togglePause() {
+    if (!running) return;
+    if (handle) {
+      clearInterval(handle); handle = null;
+      el('#btn-pause').textContent = 'Resume';
+    } else {
+      handle = setInterval(tick, 1000);
+      el('#btn-pause').textContent = 'Pause';
+    }
+  }
+
+  function nextTask() {
+    // mark remaining seconds as elapsed to keep progress roughly aligned
+    elapsedSecs += secs;
+    secs = 0;
+    advance();
+  }
+
+  function beginTask() {
+    if (idx >= plan.tasks.length) { finishPlan(); return; }
+    const t = plan.tasks[idx];
+    secs = (t.duration_minutes || 0) * 60;
+    const li = el(`#task-${idx}`);
+    if (li) li.classList.add('opacity-50');
+
+    // footer info
+    updateFooter(t.block_type, t.description || '', secs);
+
+    // sound cue
+    const bt = (t.block_type || '').toLowerCase();
+    if (bt.includes('focus')) Sound.chimeFocus();
+    else if (bt.includes('sprint')) Sound.chimeSprint();
+    else if (bt.includes('rest')) Sound.chimeRest();
+    else if (bt.includes('marathon')) Sound.chimeRest();
+  }
+
+  function tick() {
+    if (secs > 0) {
+      secs -= 1; elapsedSecs += 1;
+      updateFooterTime(secs);
+      updateOverallProgress(elapsedSecs/totalSecs*100);
+    } else {
+      advance();
+    }
+  }
+
+  function advance() {
+    const done = el(`#task-${idx}`);
+    if (done) { done.classList.remove('opacity-50'); done.classList.add('list-group-item-success'); }
+    idx += 1;
+    if (idx < plan.tasks.length) beginTask();
+    else finishPlan();
+  }
+
+  function finishPlan() {
+    clearInterval(handle); handle = null; running = false;
+    updateFooter('done', 'Plan completed 🎉', 0);
+    updateOverallProgress(100);
+    el('#btn-start').disabled = true;
+    el('#btn-reset').disabled = false;
+    Sound.chimeSprint();
+    setTimeout(()=>Sound.chimeSprint(), 200);
+  }
+
+  function updateFooter(blockType, desc, s, hideIfEmpty=false) {
+    if (hideIfEmpty && !blockType) return;
+    el('#current-block').textContent = blockType;
+    el('#current-desc').textContent = desc || '';
+    updateFooterTime(s);
+  }
+  function updateFooterTime(s) { el('#time-left').textContent = fmt(Math.max(0, s)); }
+  function updateOverallProgress(pct) {
+    const bar = el('#overall-progress');
+    bar.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+    bar.textContent = `${Math.round(pct)}%`;
+    const headerBar = el('#plan-progress');
+    if (headerBar) { headerBar.style.width = bar.style.width; headerBar.textContent = bar.textContent; }
+  }
+
+  return { bind };
+})();
+
+/** ---- Router ---- **/
+function route() {
+  const hash = (location.hash || '').replace(/^#/, '');
+  if (!hash) renderIndex();
+  else renderPlan(hash);
+}
+window.addEventListener('hashchange', route);
+route();
+</script>
+</body>
+</html>
